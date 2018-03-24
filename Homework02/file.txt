@@ -1,0 +1,13 @@
+constants.h
+file.txt
+infile.txt
+main.c
+main.o
+makefile
+parsetools.c
+parsetools.h
+parsetools.o
+pipe_demo.c
+pipe_demo.o
+pipe_demo.x
+pipes.x
