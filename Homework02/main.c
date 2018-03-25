@@ -11,7 +11,7 @@
 
 void handle_input(char *input, char* cmd[], int size);
 void handle_output(char *output, char* cmd[], int size);
-void handle_pipe(char *command);
+void handle_pipe(char* command[], int size, int pfd[], int side);
 void run_exec(char* command[], int size, int pfd[], int side);
 int pipeFlagFlipper(int flag);
 
@@ -36,38 +36,36 @@ int main() {
     // Just for demonstration purposes
     for (int i=0; i < num_words; i++) {
       //printf("%s\n", line_words[i]);
+      // still need to test input redirect
       if (strcmp(line_words[i], "<") == 0) {
         redirect = 1;
         handle_input(line_words[i + 1], command, comm_count);
         i+=2;
       }
-      else if (strcmp(line_words[i], ">") == 0) {
+      if (strcmp(line_words[i], ">") == 0) {
         redirect = 1;
         handle_output(line_words[i + 1], command, comm_count);
         i+=2;
       }
-      else if (strcmp(line_words[i], "|") == 0) {
-        // this might not be neccessary / it might be contradictory to what we want to do
-                      // maybe this variable should be global? idk how yall wanna do pipes
-        //redirect = 1;
+
+      // short circuit, so redirects nested in pipes don't seg fault.
+      if (strcmp(line_words[i], "|") == 0) {
         //printf("%s\n", "I've seen a pipe");
         // check to make sure there is a command after the pipe.
-        //handle_pipe(line_words[i + 1]);
-        if (strcmp(line_words[i], "|") == 0) {
+        if (pipe_flag) {
+          //redirect output of current commands
+          handle_pipe(command, comm_count, pfd, 0); // middle pipe
+        }
+        else {
           if (pipe(pfd) == -1) {
             handle_error("Could not create a pipe");
           }
-          pipe_flag = 0;
+          run_exec(command, comm_count, pfd, pipeFlagFlipper(pipe_flag)); // 1
+          pipe_flag = 1; // i've seen a pipe
         }
 
-        run_exec(command, comm_count, pfd, pipeFlagFlipper(pipe_flag));
-
-        pipe_flag = 1;
         comm_count = 0;
-        i+=1;
-        // create pipe
-        // call exec on left side
-        // call exec on right side
+        i+=1; // skip the pipe character
         //wait(0);
       }
 
@@ -79,10 +77,15 @@ int main() {
       }
 
       if (((i == num_words-1) && pipe_flag == 1)) {
-        printf("inside last pipe if\n");
-        printf("%s\n", command[0]);
-        run_exec(command, comm_count, pfd, pipeFlagFlipper(pipe_flag));
-        //wait(0);
+        //printf("inside last pipe if\n");
+        //printf("%s\n", command[0]);
+
+        run_exec(command, comm_count, pfd, 0);
+        wait(0);
+        if (close(pfd[0]) == -1)
+            handle_error( "Parent could not close stdin" );
+        if (close(pfd[1]) == -1)
+            handle_error( "Parent could not close stdout" );
       }
 
     }
@@ -90,22 +93,16 @@ int main() {
     if ((pipe_flag == 0) && (redirect == 0)) {
       run_exec(command, comm_count, NULL, -1);
     }
-    else {
-      if (close(pfd[0]) == -1)
-          handle_error( "Parent could not close stdin" );
-      if (close(pfd[1]) == -1)
-          handle_error( "Parent could not close stdout" );
-    }
-    wait(0);
+    while (wait(NULL) != -1);
   }
 
   return 0;
 }
 
 void run_exec(char* command[], int size, int pfd[], int side) {
-
+  // redirects only one input. Only used for first and last
   pid_t child = fork();
-  printf("%s, %d child id\n", command[0], child);
+  //printf("%s, %d child id\n", command[0], child);
   if (child == 0) {
     // left side of the pipe redirects output -- side == 1
     // right side of the pipe redirects input -- side == 0
@@ -119,13 +116,49 @@ void run_exec(char* command[], int size, int pfd[], int side) {
         handle_error("Could not close pfd from pipe");
       }
     }
-    printf("running command: %s\n", command[0]);
+    //printf("running command: %s\n", command[0]);
     command[size] = (char*)NULL; // set the last value to NULL
     execvp(command[0], command);
-
   }
+  return;
+}
 
+void handle_pipe(char* command[], int size, int pfd[], int side) {
+  // redirects both inputs. used for middle pipe.
+  pid_t child = fork();
+  //printf("%s, %d child id from handle_pipe\n", command[0], child);
+  if (child == 0) {
+    // left side of the pipe redirects output -- side == 1
+    // right side of the pipe redirects input -- side == 0
+    if (pfd != NULL) { // redirect the input
+      //printf("doing pipe redirect from handle_pipe\n");
+      if (close(0) == -1) {
+        handle_error("Could not close file redirect from pipe");
+      }
+      dup(pfd[0]);
+      if (close(pfd[0]) == -1 || close(pfd[1]) == -1) {
+        handle_error("Could not close pfd from pipe");
+      }
 
+      //CREATE NEW pipe
+      if (pipe(pfd) == -1) {
+          handle_error("Could not create a pipe");
+      }
+
+      if (close(1) == -1) {
+        handle_error("Could not close file redirect from pipe");
+      }
+      dup(pfd[1]);
+      if (close(pfd[0]) == -1 || close(pfd[1]) == -1) {
+        handle_error("Could not close pfd from pipe");
+      }
+
+    }
+    //printf("running command: %s\n", command[0]);
+    command[size] = (char*)NULL; // set the last value to NULL
+    execvp(command[0], command);
+  }
+  return;
 }
 
 void handle_input(char *input, char* cmd[], int size) {
@@ -175,24 +208,20 @@ void handle_output(char *output, char* cmd[], int size) {
   return;
 }
 
-void handle_pipe(char *command){
-  return;
-}
-
 // The 2 functions below are modified from the error function in pipe_demo.c
 void handle_error_file(const char *message, char *file) {
   extern int errno;
 
-  fprintf( stderr, "%s%s\n", message, file );
-  fprintf( stderr, " (%s)\n", strerror(errno) );
+  printf( "%s%s\n", message, file );
+  printf( " (%s)\n", strerror(errno) );
   exit( 1 );
 }
 
 void handle_error(const char *message) {
   extern int errno;
 
-  fprintf( stderr, "%s\n", message);
-  fprintf( stderr, " (%s)\n", strerror(errno) );
+  printf( "%s\n", message);
+  printf( " (%s)\n", strerror(errno) );
   exit( 1 );
 }
 

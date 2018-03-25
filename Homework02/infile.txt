@@ -1,4 +1,4 @@
-these are some words
-on
-different
-lines
+wc, 5531 child id
+wc, 0 child id
+running command: wc
+0
